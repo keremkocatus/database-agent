@@ -89,6 +89,24 @@ Ayrıca: index'ler (`sys.indexes`), **check constraint'ler** (`sys.check_constra
 
 LLM'e verilen bağlam: kolon listesi + FK'lar + check constraint'ler + bu tabloyu kullanan ilk N SP'nin adı/özeti. Çıktı `table_description` ve boş `description` alanlarına yazılır.
 
+### Enrichment kalite kapısı (karar — "zehirli embedding" önleme)
+LLM özeti yanlış/uydurma olursa embedding'i bozar ve arama **sessizce** kötüleşir (`07` kart bunu kullanır).
+Bu yüzden her LLM açıklaması, embed edilmeden önce **deterministik (LLM'siz, ucuz) bir tutarlılık
+kontrolünden** geçer:
+- **Çapraz-doğrulama:** Üretilen özette/açıklamada anılan tablo, kolon ve parametre adları gerçekten
+  yapısal metadata'da (`04` `meta.json` / `05` tablo kaydı) var mı? Anılan ama var-olmayan ad =
+  halüsinasyon sinyali.
+- **Sonuç:**
+  - Geçerse → `summary`/`description` yazılır, `summary_confidence: ok`.
+  - Uyuşmazlık → **1 retry** (daha sıkı "yalnızca verilen alanları kullan" talimatıyla). Yine
+    uyuşmazsa → alan **boş bırakılır** + `summary_confidence: low`; nesne **yapısal-only kartla**
+    embed edilir (`07` fallback). Uydurma özet **embeddinge asla girmez.**
+- **Kapsam:** Aynı kontrol kolon açıklamalarına da uygulanır (anılan kolon tabloda var mı?).
+- **Ölçüm:** `summary_confidence: low` oranı `16`'ya metrik; eval'de (`15`) özet doğruluğu spot-check.
+
+> Bu kontrol determinist olduğundan ucuzdur ve `09` JSON-şema doğrulamasının üstüne biner
+> (şema *formatı* doğrular; bu kontrol *içeriğin gerçekliğini* doğrular).
+
 ### Neden profilleme kapalı?
 - **Gizlilik:** Sigorta verisi; örnek değerler PII içerebilir.
 - **Yük:** `SELECT TOP/DISTINCT` canlı tabloda maliyetli.

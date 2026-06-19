@@ -19,6 +19,7 @@ state = { question, history, intent, scratch=[], shortlist=[], budget }
 # (0) Anlama: niyet sınıflandırma + sorgu yeniden yazma (08; tek LLM adımı)
 #     - Türkçe eşanlamlı/kısaltma genişlet; çok-turlu ise "onu/bunu" → önceki uid çöz
 #     - belirsiz/çok geniş + düşük güven → TEK netleştirme sorusu döndür (aşağıdaki karar)
+#     - DÜŞÜK GÜVENDE rewrite'ı kullanıcıya göster (2.4): "şunu mu kastettin: …" (onay/düzelt)
 intent, rewritten = understand(question, history)
 
 while not budget.exceeded():                 # max_iter + max_tokens + duvar-saati
@@ -35,6 +36,32 @@ return summarize(shortlist)                   # bütçe aşıldıysa eldekiyle d
 - **Paralel araç:** native paralel tool-call varsa bağımsız çağrılar (ör. kod + tablo araması) paralel; yoksa seri.
 - **Durdurma:** `finish`, ya da bütçe (iterasyon/token/saat), ya da art arda yararsız adım sayacı.
 - **State:** sorgu-bazlı in-memory; konuşma geçmişi API oturumunda (`12`), çok-turlu bağlam `understand`'da çözülür.
+
+## Veritabanı kapsamı çözümü (çok-DB — karar: DB-başına izole arama)
+
+Karar: **Sistem çok-DB ilişkilendirme/birleştirme yapmaz; her DB kendi içinde keşfedilir ve aranır.**
+Cross-DB *bağımlılık kenarları* (`02`/`04`) keşif için kurulur ama sorgu, **tek bir hedef DB**
+kapsamında çalışır. Agent hedef DB'yi şöyle belirler:
+
+1. **Kullanıcı belirttiyse:** `server`/`database` filtresi doğrudan araçlara geçer (`search_objects`).
+2. **Belirtmediyse → agent SORAR:** `ask_user("Hangi veritabanında arayayım?", options=[en olası DB'ler])`.
+   Bu, çok-DB belirsizliğinde **birincil** yoldur (tek netleştirme sorusu, `18`).
+3. **Kullanıcı bilmiyorsa → sıralı fallback (karar):** Agent "bilmiyorum/hepsinde ara" yanıtında,
+   DB'leri **en olası → en az olası** sırayla dener:
+   - Olasılık sırası: sorgu embedding'inin her DB'nin **kategori/özet kartlarına** (`07` `kind='category'`)
+     yakınlığı + ad/lexical sinyali ile hesaplanır (ucuz ön-eleme; hangi DB bu konuyu içeriyor).
+   - En olası DB'de tam arama → eşik geçen sonuç bulunursa **durur ve sunar.**
+   - Bulamazsa sıradaki DB'ye geçer; her geçişte kısa ilerleme sinyali (`18` `tool_result`).
+   - **"Uzun sürebilir" uyarısı:** Birden fazla DB taranacaksa kullanıcıya baştan
+     `{note: "kapsam belirsiz, en olası DB'lerden başlayarak sırayla arıyorum, biraz uzun sürebilir"}`
+     bilgisi (SSE) verilir.
+   - Sert sınır: en fazla `max_fallback_dbs` (config, ör. 5) DB denenir; sonra "şu DB'lerde bulundu /
+     hiçbirinde net sonuç yok, lütfen DB belirt" der.
+4. **Bitmemiş DB'den soru (1.5):** Hedef DB henüz hiç indekslenmemiş/bootstrap tamamlanmamışsa agent
+   sessiz boş dönmez: "bu DB henüz katalogda hazır değil (indeksleniyor/onay bekliyor)" der (`16` freshness).
+
+Bu döngü, "tek DB net cevap" hedefiyle "kullanıcı DB bilmese de bulmaya çalış" esnekliğini dengeler;
+çok-DB sonuç *karıştırma/sıralama* karmaşıklığına hiç girilmez (kapsam dışı, `REVIEW-gap-analysis` 2.2).
 
 ## Araç seti (tools)
 

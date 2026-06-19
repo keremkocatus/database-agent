@@ -173,6 +173,8 @@ Tüm bileşenlerin altında ince bir platform katmanı:
 2. **Kaynak DB salt-okunur.** Hiçbir bileşen kaynağa yazmaz.
 3. **Backpressure / rate-limit:** Worker kaynak MSSQL'e karşı eşzamanlılığı sınırlar (prod'u yormaz); cloud LLM/embedding çağrılarında kota/maliyet için throttle + retry/backoff (`09`).
 4. **Disk = içerik otoritesi; Postgres indeksi yeniden kurulabilir, ama Postgres otoriter durumu (feedback/chat/runs) yedeklenmeli** (yukarıdaki tablo + `19` DR).
+5. **Sistem kilitlenmez.** Her paylaşılan kaynak (kaynak MSSQL, AI instance, Postgres bağlantısı) **sınırlı havuz + timeout + iptal** ile yönetilir; havuz dolunca iş **kuyruğa alınır**, bloke olmaz. Tek istisna: aynı `(server,db)` keşfinde alınan advisory lock (yalnızca o kapsamın eş-keşfini engeller). Çok-kullanıcı eşzamanlılığı ve kapasite sinyali `20`'de.
+6. **Süreç sürüm uyumu.** API ↔ Worker farklı sürümlerde çalışabilir: geriye-uyumlu migration (önce şema → worker → api), job `payload.version`, bilinmeyen sürümü **beklet** (`held`, dead-letter değil) — `11`/`12`.
 
 ## Önemli mimari kararların gerekçesi
 

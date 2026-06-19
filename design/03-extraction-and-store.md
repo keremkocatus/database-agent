@@ -137,3 +137,12 @@ Karar: **changelog + bir önceki sürüm** (dengeli, hafif audit).
 - Extraction tek `sys.sql_modules` sorgusuyla toplu çekilir (N+1 değil).
 - 2000 SP için tipik tam çekim saniyeler sürer; incremental çalışmalarda yalnızca değişen birkaç nesne işlenir.
 - Hash hesaplama lokal/CPU — ihmal edilebilir.
+
+## İntra-run kaynak değişimi (not — `REVIEW-gap-analysis` 3.6)
+
+Extraction dakikalar sürebilir; envanter snapshot'ı (`02` keşif) ile tanım çekimi arasında bir SP
+`ALTER`'lanırsa **"yırtık okuma"** olabilir (snapshot'taki `modify_date` ile çekilen gövde anlık
+tutarsız). Bu **bilinçli kabul edilen** bir durumdur: sistem tutarlı-anlık (point-in-time) okuma
+denemez. Bir sonraki sync'te değişen `modify_date` + hash farkı nesneyi yeniden yakalar
+(**eventual catch-up**). Katalog kullanımı için bu gecikme önemsizdir; kaynak DB salt-okunur ve
+hiçbir karar bu ara-tutarsızlığa dayanmaz.

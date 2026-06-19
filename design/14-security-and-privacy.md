@@ -2,20 +2,20 @@
 
 ## Amaç
 
-Sistem hassas bir ortamda (sigorta, çok-DB MSSQL) çalışır ve "cloud da olsun" kararı verildi. Bu dosya üç güvenlik yüzeyini tanımlar: **(1) sır sızıntısı**, **(2) prompt-injection**, **(3) serving erişim kontrolü**. Ayrıca kaynak-tarafı güvenlik ilkelerini toplar.
+Sistem hassas bir ortamda (sigorta, çok-DB MSSQL) çalışır ve "cloud da olsun" kararı verildi. Bu dosya üç güvenlik yüzeyini tanımlar: **(1) cloud maruziyeti / provider seçimi**, **(2) prompt-injection**, **(3) serving erişim kontrolü**. Ayrıca kaynak-tarafı güvenlik ilkelerini toplar.
 
-## 1) Sır / credential sızıntısı (cloud öncesi tarama + maskeleme)
+## 1) Cloud maruziyeti — provider seçimi sorumluluğu kullanıcıda (karar: redaction YOK)
 
-**Risk:** SP/View/Function gövdelerinde hardcoded şifre, connection string, API anahtarı, token bulunabilir. Bu içerik embedding/enrichment için **cloud'a** giderse sır dışarı sızar; lokal indekste de düz metin durur.
+**Risk:** SP/View/Function gövdelerinde hardcoded şifre, connection string, API anahtarı, token bulunabilir. Bu içerik embedding/enrichment için **cloud'a** giderse sır dışarı sızar.
 
-**Önlem — redaction katmanı (extraction sonrası, embedding/LLM öncesi):**
-- **Desen tarama:** `PWD=`, `Password=`, `Data Source=...;User Id=...;Password=...`, `OPENQUERY`/linked-server kimlik blokları, `EXEC sp_addlinkedsrvlogin`, JWT/`sk-`/`AKIA…` benzeri token kalıpları, IP+kullanıcı+şifre üçlüleri.
-- **Entropi kontrolü:** uzun yüksek-entropili stringler (olası secret) işaretlenir.
-- **Maskeleme:** bulunan secret `«REDACTED:kind»` ile değiştirilir. **Ham `.sql`** diskte de maskelenmiş tutulur (varsayılan) — disk de güven sınırı içinde değil sayılır.
-- **Politika:** `allow_cloud` açık DB'lerde redaction **zorunlu**; sadece-lokal DB'lerde de varsayılan açık (config `redaction.enabled`, kapatmak bilinçli karar).
-- **Raporlama:** bulunan secret'lar maskelenmiş özetiyle run-store'a + uyarı (kuruma "şu SP'de gömülü kimlik var" sinyali — bonus güvenlik değeri).
+**Karar:** Sistem **otomatik sır-maskeleme (redaction) yapmaz.** Gerekçe: desen/entropi tabanlı redaction tek-bariyer ve fail-open bir savunmadır; atipik bir secret formatı kaçarsa sızıntı geri alınamaz. Bu yüzden bariyeri "tahmini maskeleme"ye değil, **provider seçiminin kendisine** koyuyoruz. Hassas içerik için **kullanıcı sorumludur**: o DB'yi yalnızca **lokal model** kullanacak şekilde işaretler; cloud'a hiç gitmez.
 
-> Not: redaction embedding/aramayı bozmaz — secret zaten anlamsal sinyal taşımaz; maskeleme isabeti etkilemez.
+**Mekanizma (`09` ile):**
+- **`allow_cloud` guard:** Sunucu/DB bazında `allow_cloud: false` → o kapsamın **hiçbir içeriği** (enrich/embed/agent) cloud provider'a gönderilmez; yalnızca lokal model kullanılır. Yanlış config'e karşı sistem-geneli sigorta (`09`).
+- **Varsayılan güvenli taraf:** `allow_cloud` global varsayılanı **false**; cloud kullanımı bilinçli, kapsam-bazlı bir tercihtir (`new_database_policy: discover_then_approve` ile birlikte istemsiz cloud maruziyetini engeller, `02`).
+- **Şeffaflık:** `doctor` (`19`) ve `/scope` (`12`), hangi kapsamların cloud'a açık olduğunu raporlar → operatör hassas DB'leri kolayca lokal-zorunlu tutar.
+
+> Not: Gömülü-secret **tespiti** ileride opsiyonel bir "bilgilendirme" özelliği olarak eklenebilir (kuruma "şu SP'de gömülü kimlik var" sinyali) — ama bu bir **güvenlik bariyeri değildir**; bariyer provider seçimidir. (Bkz. `REVIEW-gap-analysis` 1.3.)
 
 ## 2) Prompt-injection (SP içeriği = veri, talimat değil)
 
@@ -50,6 +50,8 @@ Bazı tablo/SP'ler (maaş, TCKimlik, kritik iş sırrı) sistemin **hiç dokunma
 
 **Audit:** Dışlanan sayısı + `reason` run-store'a yazılır; adlar log'da maskeli.
 
+## 3) Serving erişim kontrolü (kimlik + kapsam + rol)
+
 **Risk:** Katalogun kendisi (SP isimleri, tablo şeması, bağımlılıklar) iş-hassas bilgidir; herkes her şeyi sorgulamamalı.
 
 **Önlem (kademeli):**
@@ -58,6 +60,45 @@ Bazı tablo/SP'ler (maaş, TCKimlik, kritik iş sırrı) sistemin **hiç dokunma
 - **Audit:** Her `/ask`/`/search` → kim, hangi kapsam, hangi sorgu, hangi sonuç `uid`'leri → trace log.
 - **Rate-limit:** `12` middleware (kötüye kullanım/taşma).
 - İleride: OIDC/SSO + rol-bazlı kapsam (kurumsal). Şimdilik API-key + kapsam yeterli.
+
+### 3.1) Per-user görünürlük ara katmanı (karar: var)
+
+`exclusions` (2.5) **sistem-geneli**dir: dışlanan nesne **herkese** görünmez (hiç indekslenmez).
+Scope ise DB granülaritesinde "neyi görebilirsin"i belirler. Arada eksik kalan katman:
+> "Kullanıcı A `KaskoDB`'yi görebilir **ama** içindeki PII tablolarını göremez;
+> DBA kullanıcı B **görebilir**."
+
+Bunun için **iki-katmanlı görünürlük** modeli (sistem dışlaması + kullanıcı-bazlı görünürlük):
+
+```yaml
+# config/access.yaml  (veya servers.yaml altında)
+roles:
+  - name: "dba"
+    scope: { servers: ["*"] }
+    deny: []                                  # her şeyi görür (sistem exclusion hariç)
+  - name: "analyst"
+    scope: { servers: ["kasko-sql"], databases: ["KaskoDB"] }
+    deny:                                     # kullanıcı-bazlı ek görünmezlik
+      - { types: ["table"], patterns: ["*_PII", "TCKIMLIK_*"] }
+      - { categories: ["maas", "bordro"] }    # kategori-bazlı da kısıtlanabilir
+api_keys:
+  - key_env: "ANALYST1_KEY"
+    role: "analyst"
+    user_key: "analyst1"
+```
+
+**Davranış (sistem-exclusion ile aynı "görünmezlik" semantiği):**
+- Kullanıcının `deny` kuralına uyan `uid`'ler **o kullanıcı için** retrieval (`08`), agent (`10`),
+  `list_scope`, katalog ve chat belleğinde (`17`) **hiç görünmez** — "var ama erişemezsin" denmez.
+- **Fark:** sistem `exclusions`'ın aksine bu nesneler **indekslenir** (başka kullanıcılar görebilir);
+  görünürlük **sorgu-zamanı zorunlu filtre** olarak `user_key`→`role`→`deny` üzerinden uygulanır.
+- **Zorunlu filtre, atlanamaz:** retriever ve agent araçları kullanıcı scope'u + `deny`'ı
+  **birleşik zorunlu filtre** olarak alır; kullanıcı sorgu parametresiyle geçemez (`08` dışlama bölümü).
+- **Audit:** Her sorgu, uygulanan `role`/`deny` ile birlikte log'lanır (`16`).
+
+**İki katmanın özeti:** sistem `exclusions` = "hiç dokunma, herkesten gizle" (en sert, veri hiç çekilmez);
+per-user `deny` = "indeksle ama bu kullanıcıya gösterme" (esnek, rol-bazlı). İkisi birlikte
+"PII'yi DBA görür, analist görmez" senaryosunu çözer.
 
 ## Kaynak-tarafı güvenlik (önceki dosyalardan derleme)
 
@@ -72,8 +113,8 @@ Bazı tablo/SP'ler (maaş, TCKimlik, kritik iş sırrı) sistemin **hiç dokunma
 | Bölge | Güven | Kural |
 |---|---|---|
 | Kaynak MSSQL | salt-okunur, güvenilir altyapı | asla yazma |
-| Kaynak içerik (SP gövdesi/yorum) | **güvenilmez veri** | redaction + injection guardrail |
-| Lokal disk store | güven sınırı içinde değil sayılır | secret maskelenmiş tutulur |
+| Kaynak içerik (SP gövdesi/yorum) | **güvenilmez veri** | injection guardrail (veri olarak işle) |
+| Lokal disk store | iç (güvenilir altyapı) | DB/dosya-sistemi erişim kontrolü |
 | Postgres indeks | iç | erişim DB kimlik bilgisiyle |
-| Cloud LLM/embedding | dış | yalnızca redaction'dan geçmiş içerik; `allow_cloud` |
-| Serving (API/CLI) | kimlik + kapsam | scope zorunlu filtre + audit |
+| Cloud LLM/embedding | dış | yalnızca `allow_cloud: true` kapsamlar; hassas DB = lokal-zorunlu |
+| Serving (API/CLI) | kimlik + kapsam + rol | scope + per-user `deny` zorunlu filtre + audit |

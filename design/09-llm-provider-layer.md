@@ -108,16 +108,33 @@ Karar: **native varsa native, yoksa text-ReAct fallback.**
 
 ## Önbellek (offline görevler)
 
-Karar: **(prompt-hash + model_id) yanıt önbelleği** (`cache.offline_tasks`). Categorizer/enricher gibi deterministik (temp 0) offline görevlerde aynı girdi → önbellekten yanıt. Reindex/yeniden çalışmada cloud maliyetini ve süreyi keser, determinizmi pekiştirir. (Agent/query-time önbelleklenmez — bağlam değişken.)
+Karar: **(prompt-hash + model_id) yanıt önbelleği** (`cache.offline_tasks`). Categorizer/enricher gibi (temp 0) offline görevlerde aynı girdi → önbellekten yanıt. Reindex/yeniden çalışmada cloud maliyetini ve süreyi keser.
+
+> **Determinizm notu (`REVIEW-gap-analysis` 3.4):** "temp 0 + seed" çıktıyı **garanti olarak**
+> deterministik kılmaz — vLLM batching/sürüm farkları bit-aynılığı bozabilir. Doğru ifade:
+> önbellek sayesinde aynı girdi **tekrarlanabilir** (önbellekten döner); ham model çağrısının
+> bit-aynılığı **iddia edilmez**. "Deterministik" kelimesi dokümanlarda bu anlamda okunmalı.
 
 ## Dayanıklılık (resilience)
 
 Adapter ince ama şunları içerir:
-- **Retry + backoff:** geçici hata/timeout.
+- **Retry + backoff:** geçici hata/timeout için **2 deneme** (üstel backoff).
 - **Fallback zinciri:** `agent` provider'ı düşerse config'teki yedeğe geç (ör. lokal vLLM down → Vertex) — **`allow_cloud`'a saygılı** (kapalıysa cloud yedeğe geçmez).
 - **Token bütçeleme:** her modelin `caps.max_context`'i bilinir; aday listeleri/kartlar buna göre kırpılır.
-- **Cost + rate-limit:** provider başına kota/eşzamanlılık throttle (cloud maliyet + `01` backpressure); token sayımı log'lanır.
+- **Eşzamanlılık + rate-limit:** provider başına `ai.*` semaphore (`20`) + kota throttle (`01` backpressure); slot dolunca **kuyruğa alınır, bloke etmez**. Token sayımı `16`'ya akar.
 - **Tool-call normalizasyonu:** yukarıda (tek şema).
+- **Timeout + iptal:** her çağrının duvar-saati timeout'u; aşımda iptal → slot havuza döner (sızıntı/kilit yok, `20`).
+
+### Kalıcı başarısızlık → fail-listesi (karar, `REVIEW-gap-analysis` 3.4)
+Bir **offline pipeline görevi** (enrich/categorize/embed) 2 retry sonrası hâlâ başarısızsa
+(provider hatası, şema-doğrulama başarısız, parse_error), nesne sonsuz döngüye **sokulmaz**:
+- Nesne `state = 'failed'` + `fail_reason` ile **ayrı bir başarısızlar listesine** alınır
+  (`objects.state` + run-store; job tarafı dead-letter, `11`).
+- **Aramaya katılmaz:** `failed` nesne indekse girmez / indeksten düşürülür → bozuk/yarım kayıt
+  sorguya sızmaz. (Yapısal-only kart üretilebiliyorsa o tercih edilir, `07`; üretilemiyorsa hiç embed edilmez.)
+- **Görünürlük:** `db-agent jobs --state failed` + `16` metrik/alarm; bir sonraki sync'te veya
+  manuel `reindex` ile yeniden denenir. Geçici sorun düzelince otomatik geri kazanılır.
+- Diğer nesneler etkilenmez (`11` "sistem diğer job'lara devam eder").
 
 ## Model lisansı (açık kaynak notu)
 
@@ -135,9 +152,28 @@ Bir nesnenin ham SQL'i model context'ini aşıyorsa (binlerce satır), enricher 
 Worker (`11`) aynı anda **BGE-M3 embedder + bge-reranker + (lokal ise) chat LLM** yükleyebilir → tek GPU'da bellek çekişmesi.
 - **vLLM ayrı süreç/sunucu:** Chat LLM genelde kendi vLLM server'ında; worker ona HTTP ile bağlanır (bellek izole). Embedder/reranker worker içinde (daha küçük).
 - **Lazy load + tek instance:** Modeller ilk kullanımda yüklenir, süreç ömrü boyunca tek instance (paylaşılır), tekrar tekrar yüklenmez.
-- **VRAM bütçesi:** config'te model başına tahmini VRAM; toplam GPU'yu aşarsa ya ayrı node'a dağıt (`01` worker ayrık) ya da daha küçük quantization seç (`13` açık soru #3: GPU spesifikasyonu).
+- **VRAM bütçesi:** config'te model başına tahmini VRAM; toplam GPU'yu aşarsa ya ayrı node'a dağıt (`01` worker ayrık) ya da daha küçük quantization seç.
 - **CPU fallback:** GPU yoksa embedder/reranker CPU'da (yavaş ama çalışır); chat için Ollama/cloud.
 - **Batch:** embedding/rerank batch'lenir (`07`/`08`) → GPU verimliliği.
+
+### Donanım profili — 24 GB taban, yukarı otomatik ölçeklen (karar)
+GPU **zorunlu değil** (cloud veya CPU de çalışır), ama lokal senaryoda **en kötü durum tek 24 GB GPU**'da
+sorunsuz çalışacak şekilde ayarlanır; daha fazlası varsa **rahatça** kullanılır. 24 GB için özel kasıntı yok.
+
+- **Taban profili (floor, tek 24 GB):** chat = **Qwen2.5-14B-Instruct AWQ (4-bit)** (~9 GB) + BGE-M3 (~2 GB)
+  + bge-reranker (~2 GB) + KV cache. Bu iş yükünde (özet/kategori/kısa-bağlam ReAct) AWQ kalite kaybı ihmal edilebilir.
+- **Otomatik ölçeklenme:** `doctor` (`19`) mevcut VRAM/GPU sayısını **algılar** ve profili ona göre seçer:
+  - **>24 GB / 48 GB:** daha yüksek hassasiyet (AWQ yerine FP16/8-bit), daha büyük KV cache → daha çok
+    eşzamanlı chat slot'u (`20`).
+  - **2+ GPU:** chat (vLLM) ayrı GPU'da, embed/rerank worker GPU'sunda (`01`/`20` çekişme ayrımı).
+  - **<24 GB / CPU:** Qwen2.5-**7B** kuantize (chat) + CPU embedder/reranker (yavaş ama çalışır) — fallback profili.
+- **Cloud birinci-sınıf:** Donanım hiç yoksa chat/embedding cloud provider'dan (`allow_cloud` ile);
+  hassas DB'ler yine lokal-zorunlu kalabilir (`14`). Provider seçimi config; çekirdek değişmez.
+- **Damga:** Seçilen profil (model + quantization + dim) indekse damgalanır (`07`); embedding modeli/dim
+  değişirse eski-set servis + swap devreye girer (`07`/`11`). Profil değişimi otomatik değil, bilinçli.
+
+Profiller config'te adlandırılır (`hardware_profile: auto | gpu24 | gpu48 | multi_gpu | cpu | cloud`);
+`auto` (varsayılan) doctor'ın algıladığını kullanır.
 
 ## Gizlilik anahtarı
 

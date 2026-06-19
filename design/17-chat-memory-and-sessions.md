@@ -81,7 +81,8 @@ CLI: `db-agent ask --session <id> "..."`, `db-agent sessions [list|show|rm]`.
 ## Çok-kullanıcı, gizlilik, retention
 
 - **İzolasyon:** Oturum `user_key`'e bağlı; kullanıcı yalnızca kendi oturumlarını görür. Oturum `scope`'u (`14`) sorgu kapsamını da sınırlar — sohbet, kullanıcının izinli server/db'leri dışına çıkamaz.
-- **Dışlama:** Sohbet belleği de dışlama kuralına uyar (`14`) — dışlanan `uid` ne cevapta ne geçmişte tutulur.
+- **Eşzamanlı çok-kullanıcı (`20`):** Oturum durumu Postgres'te, agent state sorgu-bazlı in-memory (`10`) → oturumlar birbirini etkilemez; birden fazla kişi aynı anda sohbet edebilir. Eşzamanlı `/ask` sayısı `query.max_concurrent_chats` slot'u kadar paralel; aşılırsa kuyruğa alınır (`queued` SSE), kapasite tükenirse `503`+`capacity` — **sistem kilitlenmez, kullanıcı bilgilendirilir** (`20`).
+- **Dışlama + per-user görünürlük:** Sohbet belleği de dışlama (`14`) ve **per-user `deny`** (`14` §3.1) kurallarına uyar — kullanıcıya kapalı `uid` ne cevapta ne geçmişte tutulur.
 - **Retention (`01`/`16`):** Oturum/mesaj saklama penceresi yapılandırılır; kullanıcı kendi oturumunu silebilir. Mesaj içerikleri maskeleme kurallarına tabi.
 - **Audit:** Her mesaj `trace_id` ile observability'ye (`16`) bağlı.
 

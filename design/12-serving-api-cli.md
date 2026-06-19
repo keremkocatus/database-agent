@@ -50,7 +50,9 @@ GET  /healthz                     # DB + provider capability probe (09)
 - **Streaming:** `/ask` `Accept: text/event-stream` → **tipli SSE olay akışı** (understanding/clarification/plan/tool_call/tool_result/token/sources/confirmation_request/done) — UI adım-adım render eder; protokol `18`'de. `POST /v1/feedback` onay/düzeltme kaydeder (`18`).
 - **Oturum + bellek:** `session_id` ile çok-turlu sohbet; kalıcı oturum, pencere+rolling-summary+semantik bellek ve `/v1/sessions` uçları **`17`**'de. Agent state sorgu-bazlı kalır (`10`).
 - **Observability:** her istek `trace_id` ile metrik/trace/log'a bağlı (`16`).
-- **Auth:** Lokal/kurum-içi; basit API-key (header) yeterli. Kapsam kısıtlaması (kullanıcı→izinli server/db) ileride eklenebilir.
+- **Auth:** API-key (header) zorunlu. Kullanıcı→izinli server/db **kapsam (scope)** ve **rol-bazlı per-user `deny`** zorunlu filtre olarak uygulanır (`14`). Anahtarlar `.env`/secrets'ta, log'da maskeli.
+- **Çok-kullanıcı + kapasite sinyali (`20`):** Eşzamanlı `/ask` oturumları izole (`17`) ve paralel işlenir; sistem kapasiteye yaklaşınca **kilitlenmez, bilgilendirir** — istek kuyruğa alınırsa SSE `queued {position, est_wait_ms}`, kapasite tükenirse `503 + Retry-After` + tipli `capacity` olayı. Eşzamanlılık/kapasite havuzları `20`'de.
+- **Süreç sürüm uyumu (`11`):** API ↔ Worker farklı sürümde olabilir; job `payload.version` + geriye-uyumlu migration (önce şema→worker→api); bilinmeyen sürüm dead-letter değil **beklet** (`held`).
 
 ## CLI yüzeyi (Typer)
 

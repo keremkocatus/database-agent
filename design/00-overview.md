@@ -52,11 +52,12 @@ Kendisine **doğrudan bağlantı bilgisi verilen MSSQL sunucularını/veritabanl
 | Klasörleme | Hibrit; **kod + veri ayrı taksonomi**; birincil+ikincil; pinned | `06` |
 | Reranker | Cross-encoder (bge-reranker), swappable | `08`, `09` |
 | Repo ilişkisi | Bağımsız araç, doğrudan DB keşfi, git yok | `02`, `03` |
-| Güvenlik | Exclusion (çok-seviye+glob, tamamen görünmez) + prompt-injection guardrail + scope auth + secret maskeleme | `14` |
+| Güvenlik | Exclusion (çok-seviye+glob, tamamen görünmez) + per-user rol görünürlük + prompt-injection guardrail + scope auth; **redaction yok** (`allow_cloud`/provider seçimi) | `14` |
+| Eşzamanlılık/Kapasite | Havuz-tabanlı paralellik + kuyruk (kilitlenmez) + AI instance + token yönetimi + çok-kullanıcı + perf-test | `20` |
 | Observability | Prometheus + Grafana + OpenTelemetry + JSON log | `16` |
 | Chatbot | Kalıcı oturum + pencere/rolling-summary/semantik bellek | `17` |
 | Etkileşim | Uyarlamalı netleştirme (1-3) + bulgular/gerekçe/onay + onaydan öğrenme + tipli SSE streaming | `18` |
-| Deployment/Operasyon | docker-compose + init/doctor + bootstrap sırası + yedek/restore (DR) + maliyet tavanı | `19` |
+| Deployment/Operasyon | docker-compose + init/doctor + DB-by-DB bootstrap + yedek/restore (DR) + token-tabanlı kill-switch | `19` |
 | Model lisansı | Açık-kaynak default Apache (Qwen/BGE); kısıtlı modeller opsiyon | `09` |
 | Test/Eval | Unit/entegrasyon/sözleşme + retrieval altın seti + CI | `15` |
 | Arayüz | FastAPI REST + Typer CLI + Worker | `12` |

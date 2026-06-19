@@ -48,8 +48,18 @@ Karar: **LLM ile niyet sınıflandırma.** Sorgu `name | capability | data | nav
 - `pg_trgm` ile ad benzerliği (`SP_TEKLF`, `teklif sure`). Vektör benzerliği ad-aramada zayıf kalır; bu onu kapatır.
 - **Eşit RRF üyesi değil:** tam-ad eşleşmesi bir **boost** (ve `name` niyetinde **kısa-devre** → o nesne en üste). Karar gereği RRF çekirdeği dense+sparse, ad sinyali üstüne biner.
 
-## (C.5) Öğrenilen geri-bildirim boost'u (opsiyonel)
-Geçmiş **onaylı aramalar** (`18` `search_feedback`) varsa: yeni sorgu semantik olarak yakın bir onaylı sorguya benziyorsa, onun `confirmed_uids`'i RRF sonrası **hafif boost** alır (rejected'lar hafif ceza). Aynı `scope` (`14`) içinde, sınırlı + zamanla sönen — aşırı kilitlenmeyi önler. Dışlanan `uid` asla boost almaz.
+## (C.5) Öğrenilen geri-bildirim — paralel ipucu, otorite DEĞİL (karar)
+Geçmiş **onaylı aramalar** (`18` `search_feedback`) bir **hızlandırıcı ipucudur, kesin doğru kabul edilmez.**
+- **Paralel, kısa-devre değil:** Onaylı feedback'ten gelen `confirmed_uids` ile **tam retrieval
+  (dense + sparse + trigram → RRF → rerank)** **her zaman paralel** çalışır. Feedback "buradan
+  başla" der ama aramayı atlatmaz.
+- **Doğrulama:** Feedback adayı, paralel çalışan tam aramanın sonucuyla **karşılaştırılır**. Aday
+  rerank skorunda eşiği geçiyorsa öne çıkar; **geçmiyorsa** (sorgu kaymış, nesne değişmiş,
+  yanlış onay) sessizce düşer ve **tam aramanın sonucu kullanılır** → "hemen diğer tarafa geç".
+- **Uygulama:** Feedback eşleşmesi RRF sonrası **hafif boost** (rejected'lar hafif ceza);
+  sınırlı + zamanla sönen; aynı `scope` (`14`) içinde; dışlanan/`deny`'lı `uid` asla boost almaz.
+- Böylece feedback **yanlışsa kilitlemez** (yumuşak sinyal), doğruysa hızlandırır. Altın set de
+  bu nedenle "otorite" değil "başlangıç noktası"dır (`15`).
 
 ## (C) RRF (Reciprocal Rank Fusion) + tam-ad boost
 Dense ve sparse listelerini skaladan bağımsız birleştirir:
@@ -66,8 +76,13 @@ Karar: **uyarlamalı rerank** (`bge-reranker-v2-m3`).
 - **Çalıştır:** `capability`/`data`/belirsiz sorgularda top-40 → (sorgu, kart) cross-encoder → en iyi 5–10. Body-chunk isabetinde rerank o chunk içeriği üzerinde.
 - Lokal, BGE-M3 ailesi (dil uyumu), birkaç on ms ek gecikme.
 
-## Dışlama (defense-in-depth)
-Dışlanan nesneler zaten indekse hiç girmez (`02`/`14`), dolayısıyla aramada doğal olarak çıkmaz. Yine de retrieval, her sorguda hem **kullanıcı kapsamını** (scope, `14`) hem **aktif exclusion kuralını** zorunlu filtre olarak uygular — sonradan eklenmiş ama henüz purge edilmemiş bir kayıt bile sızmaz. Dışlanan `uid`'ler sonuç, `why` ve `note`'ta hiç yer almaz.
+## Dışlama + per-user görünürlük (defense-in-depth)
+Sistem `exclusions` nesneleri zaten indekse hiç girmez (`02`/`14`), dolayısıyla aramada doğal olarak çıkmaz. Yine de retrieval, her sorguda **üç zorunlu filtreyi** birlikte uygular (kullanıcı geçemez):
+1. **Kullanıcı kapsamı** (scope: izinli server/database/category, `14`).
+2. **Aktif sistem exclusion** kuralı — sonradan eklenmiş ama henüz purge edilmemiş kayıt bile sızmaz.
+3. **Per-user `deny`** (rol-bazlı görünürlük, `14` §3.1) — indekste olan ama bu kullanıcıya kapalı `uid`'ler.
+
+Filtrelenen `uid`'ler sonuç, `why` ve `note`'ta hiç yer almaz; varlık ifşası yok.
 
 ## (E) Skor eşiği — dürüst cevap
 Karar: rerank/RRF skoru eşiğin altındaysa "kesin eşleşme yok, yakın adaylar şunlar" ya da "bulunamadı" döner. Agent uydurmaz; kullanıcı alakasız sonucu "cevap" sanmaz. Eşik altın set ile kalibre edilir (aşağıda).

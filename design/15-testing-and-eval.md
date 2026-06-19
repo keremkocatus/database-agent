@@ -25,10 +25,15 @@
 
 ## B) Retrieval & agent değerlendirmesi (olasılıksal)
 
-### Altın set
-- **Soru → beklenen `uid`(ler)** çiftleri. Kaynak: kurum uzmanı + gerçek kullanıcı sorularından örnekleme + **onaylı aramalardan** (`18` `search_feedback`, insan küratör onayıyla). (Sahibi `13` açık soru #5.)
+### Altın set (karar — başlangıç noktası, otorite DEĞİL — 2.1)
+- **Soru → beklenen `uid`(ler)** çiftleri. **Bootstrap:** M5'te elde set yokken **20–50 elle yazılmış**
+  tohum çift ile başlar (eşik kalibrasyonu bununla; `08-E`). Zamanla **onaylı aramalardan** (`18`
+  `search_feedback`) büyür.
+- **Kesin doğru kabul edilmez:** Feedback/altın set retrieval'da yalnızca **başlangıç ipucu**dur;
+  tam arama (dense+sparse+rerank) **paralel** çalışır ve aday sette yoksa/eşiği geçmezse sistem
+  hemen tam aramaya döner (`08` C.5). Bu yüzden "altın" set bir *yön* verir, *karar* vermez.
 - Türler: ad-araması, kavram, veri/tablo, gezinme, çok-hop bağımlılık, "bulunamamalı" (negatif).
-- Çok-dilli (TR/EN karışık) örnekler.
+- Çok-dilli (TR/EN karışık) örnekler. (Sahibi `13` açık soru #5; M5 başlama koşulu = tohum set.)
 
 ### Metrikler
 - **Retrieval:** `recall@k`, `MRR`, `nDCG`; negatiflerde "no_match" doğru mu (false-positive eşik kalibrasyonu, `08-E`).
@@ -37,14 +42,35 @@
 
 ### Determinizm/regresyon
 - LLM olasılıksal; bu yüzden eval **eşik-tabanlı** (örn. recall@5 ≥ X) ve **trend** izlenir (sürüm/model değişiminde düşüş alarmı).
-- Offline görev önbelleği (`09`) + temp 0 + seed → categorizer/enricher tekrarlanabilirliği test edilir.
+- Offline görev önbelleği (`09`) → categorizer/enricher **tekrarlanabilirliği** test edilir. (Not: ham model çıktısının bit-aynılığı garanti değil; "tekrarlanabilir" önbellek üzerinden anlaşılır — `09` determinizm notu.)
+
+### Koreferans / sorgu-yeniden-yazma eval (karar — 2.4)
+`understand` (`10`) tek çağrıda niyet + rewrite + koreferans + netleştirme kararını yapar; bu
+kritik adım yanlış çözerse tüm tur **sessizce** bozulur. Bu yüzden ayrı mini-set:
+- Çok-turlu örnekler: "onu/bunu/o SP" → beklenen `uid` çözümü doğru mu.
+- Türkçe eşanlamlı/kısaltma genişletme doğruluğu.
+- Düşük güvende rewrite'ın kullanıcıya gösterilmesi (`10`) tetikleniyor mu.
+- Metrik: koreferans çözüm doğruluğu, yanlış-rewrite oranı; trend izlenir.
+
+## Kapsamlı unit test beklentisi (karar — vurgulanır)
+Her use-case ve her deterministik bileşen için unit test **zorunlu** (yalnızca "olur" değil):
+parser, değişim tespiti, tablo sözlüğü, redaction-kaldırıldı→onun yerine `allow_cloud` guard
+testi, RRF/eşik matematiği, enrichment kalite kapısı (`05`), kategori taksonomi göçü (`06`),
+Türkçe ad normalizasyonu (`07`), fail-listesi davranışı (`09`), süreç-sürüm uyumu/`held` (`11`).
+Hedef: deterministik katmanda yüksek kapsama, LLM'siz çalışan hızlı kapı.
 
 ## CI
 
 - **Hızlı kapı (her PR):** lint + type (ruff/mypy) + unit + sözleşme testleri (mock provider, mock DB). LLM/GPU **gerektirmez** → hızlı, ücretsiz.
 - **Entegrasyon (nightly/etiketli):** Docker MSSQL + Postgres testcontainers; uçtan uca LLM'siz pipeline.
 - **Eval (manuel/nightly):** altın set; lokal küçük model veya ucuz cloud ile; metrik raporu artefakt olarak.
-- **Güvenlik:** redaction suite + bilinen prompt-injection korpusu (`14`) CI'da koşar.
+- **Güvenlik:** bilinen prompt-injection korpusu (`14`) CI'da koşar. (Redaction suite kaldırıldı — redaction yok, `14`; yerine `allow_cloud` guard'ın hassas kapsamı cloud'a göndermediği test edilir.)
+
+## Performans / yük testi (karar — `20`)
+Kapasite ölçümü için **kullanıcı-tetikli** `db-agent perf-test` (artan eşzamanlılık basamakları →
+throughput, p50/p95/p99, doygunluk noktası, kaynak kök-neden). "Sistem ~N eşzamanlı sohbet / ~M
+arama kaldırıyor" çıktısı havuz ayarına (`20` `concurrency.yaml`) temel olur. Prod kaynağa indexing
+yükü bindirmez. Detay: `20`. Perf sorgu seti altın setten türetilir.
 
 ## Test edilebilirlik ilkeleri
 - Use-case'ler infra'yı **port** üzerinden görür → her şey mock'lanabilir, LLM/GPU/DB olmadan iş mantığı test edilir.

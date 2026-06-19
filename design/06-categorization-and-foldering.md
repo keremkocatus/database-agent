@@ -72,10 +72,29 @@ Tamamen emergent taksonomi tutarsızlaşır; tamamen sabit yeni alanı kaçırı
 
 Kod ve veri taksonomileri bu süreçten **bağımsız** geçer (kod özetleri ayrı kümelenir, tablo "card"ları ayrı).
 
+### Taksonominin kendi göçü — kategori rename / merge / split (karar)
+Nesne→kategori yeniden-eşleme yetmez; **kategorinin kendisi** değişebilir (ad değişir, iki kategori
+birleşir, biri ikiye bölünür). Bu durumda `pinned_category`, `secondary_categories`, `catalog/`
+klasörleri ve `catalog.json` referansları kırılmamalı. Taksonomi versiyon diff'i açık **göç olayları**
+üretir:
+- **`rename` (key A → B):** Tüm üyelik referansları (`category`, `secondary_categories`, `pinned_category`)
+  otomatik A→B remap edilir; `catalog/code/A/` → `catalog/code/B/`'ye taşınır (klasör yeniden adlandırılır).
+- **`merge` (A + B → C):** Her iki kategorinin üyeleri C'ye taşınır; çakışan birincil/ikincil
+  tekilleştirilir; A ve B klasörleri **tombstone** ile işaretlenip C'ye yönlendirilir (eski link kırılmaz).
+- **`split` (A → A1, A2):** A üyeleri **yeniden sınıflandırılır** (pinned olmayanlar); pinned üyeler
+  operatör onayına düşer (otomatik bölünmez — insan kürasyonu korunur).
+- **Pinned koruması:** `rename`/`merge`'de pinned referans remap edilir ama **kategori içeriği**
+  korunur; `split`'te pinned asla otomatik taşınmaz.
+- **Atomiklik + audit:** Göç tek taksonomi-versiyon yükseltmesinde uygulanır; her olay `_changelog`
+  ve run-store'a yazılır (geri izlenebilir). Etkilenen kategorilerin `catalog.json`/`README` yeniden derlenir.
+
+Migration olayları taksonomi diff'inden (eski `version` ↔ yeni `version`) türetilir; el ile de
+(`config` veya `db-agent taxonomy edit`) tetiklenebilir.
+
 ## Sınıflandırma (categorizer) — indexing-time
 
 Her yeni/değişen nesne için:
-- **Girdi:** nesne adı + parametreler + kullandığı tablolar + `human_description` (varsa, `03`) + LLM özeti (`04`/enrichment).
+- **Girdi:** nesne adı + parametreler + kullandığı tablolar + `human_description` (varsa, `03`) + LLM özeti (`04`/enrichment). Özet **kalite kapısından** geçmiş olmalı (`05`); `summary_confidence: low` ise categorizer yalnızca yapısal alanlara (ad/parametre/tablo) dayanır, uydurma özete değil.
 - **Görev:** ilgili taksonomiden **bir birincil** + **0..N ikincil** kategori (ve alt kategori) seç; hiçbiri uymuyorsa `diger`.
 - **Çıktı:** `category` (birincil, klasör yerleşimi), `secondary_categories` (ikincil etiketler, arama/keşif), `subcategory`, `category_reason`, `confidence`.
 - **Model:** ucuz/küçük LLM yeterli; offline.

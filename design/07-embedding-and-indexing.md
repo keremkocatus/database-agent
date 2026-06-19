@@ -25,6 +25,21 @@ embedding:
 ```
 **Kritik kural:** Model veya `dim` değişirse indeks tutarsız olur → otomatik **full re-embed + reindex** tetiklenir. Bu yüzden indekste `embedding_model` + `dim` damgası saklanır; uyumsuzluk görülürse pipeline reindex'e geçer (bkz. `11`).
 
+### Re-embed sırasında servis: eski set ile devam (karar)
+Full re-embed saatlerce sürebilir; bu pencerede **bozuk arama** olmamalı (`01` "her zaman cevap ver"
+değişmezi reindex sırasında da geçerli). Karar: **eski tamamlanmış set ile servis et, yeni seti
+arka planda doldur, bitince atomik swap.**
+- Her embedding satırı zaten `embedding_model` + `dim` ile damgalı (yukarıdaki tablo). Re-embed,
+  **yeni model damgasıyla yeni satırlar** üreterek ilerler; eski damgalı satırlar silinmez.
+- **Sorgu, o kapsamda hâlâ "aktif" damgalı set üzerinden** çalışır (eski model). Sorgu embedding'i
+  de aktif setin modeliyle üretilir → dense uzayı tutarlı, karışık-model cosine olmaz. `dim`
+  değişse bile sorun yok (sorgu eski `dim`'i kullanır).
+- Bir kapsam (server/db) için **tüm** nesneler yeni modelde tamamlanınca `active_embedding_model`
+  damgası atomik olarak yeniye çevrilir (tek transaction); sonraki sorgular yeni seti kullanır;
+  eski damgalı satırlar artık temizlenir.
+- Böylece geçiş penceresinde kullanıcı **kesintisiz ve tutarlı** sonuç alır; yarı-bitmiş yeni set
+  hiçbir zaman sorguya girmez. (Operasyonel akış: `11` reindex.)
+
 ## Temsil: ne embed edilir?
 
 ### Birincil — "object card" (her nesne için 1 vektör)
@@ -40,6 +55,13 @@ Kullandığı tablolar: dbo.TEKLIF, dbo.SURE_TANIMLARI, dbo.KULLANICI_YETKI
 Çağırdığı nesneler: dbo.SP_KULLANICI_YETKI_KONTROL
 ```
 Bu kart `04`'teki yapısal metadata + `06`'daki kategori + özetten derlenir (özet = `human_description` varsa o, yoksa LLM özeti; `03`/`05`). Kısa, anlam-yoğun, token-verimli.
+
+**Yapısal-only kart (fallback — özet yoksa/güvenilmezse):** Özet alanı **opsiyoneldir.** Enrichment
+henüz çalışmamışsa (M1–M3, LLM'siz aşama), başarısızsa (`parse_error`/LLM down), veya kalite
+kapısından (`05`/`06` tutarlılık kontrolü) **düşük güvenle** geçmişse → kart, "Özet" satırı
+**olmadan** yalnızca yapısal alanlardan (ad + tip + parametre + tablo + kategori) derlenir ve
+yine de embed edilir. Böylece nesne aramada **hiç görünmez kalmaz**; özet gelince yeniden embed
+edilir. (Düşük güvenli/uydurma özet karta **konmaz** — `05`/`06` kararı; zehirli embedding önlenir.)
 
 ### İkincil — gövde chunk'ları (sadece büyük/karmaşık nesneler)
 Bazı SP'ler binlerce satır; kart bazen yetmez ("şu spesifik hesaplama nerede geçiyor"). Eşik üstü (ör. > 300 satır) nesneler için ham SQL **mantıksal bloklara** bölünüp ek vektörler üretilir:
@@ -104,12 +126,32 @@ CREATE INDEX ON embeddings USING hnsw (sparse sparsevec_ip_ops);       -- sparse
 CREATE INDEX ON objects USING gin (name gin_trgm_ops);                 -- fuzzy/kısmi ad
 CREATE INDEX ON objects USING gin (secondary_categories);
 CREATE INDEX ON objects (server, database, object_kind, category);
+CREATE INDEX ON embeddings (uid, embedding_model);                     -- aktif-set / re-embed swap (1.2)
+CREATE INDEX ON edges (src_uid);                                       -- get_dependencies (04)
+CREATE INDEX ON edges (dst_uid);                                       -- get_dependents / etki analizi (04)
 ```
+> İndeks disiplini: her sık-filtrelenen kolon (scope, kategori) ve her graph yön-sorgusu (src/dst)
+> için indeks baştan tanımlanır; eksik indeks bu ölçekte bile seq-scan'e düşürür. Migration
+> dosyalarında (`13`) indeksler şema ile birlikte versiyonlanır.
 
 - **Vektör:** HNSW (hızlı ANN), dense + sparse ayrı. `m`/`ef_construction` config'ten.
-- **Lexical:** BGE-M3 sparse (öğrenilmiş) + `pg_trgm` (tam/yazım-hatalı ad). Türkçe-duyarlı normalizasyon (İ/ı, `unaccent`, ad tokenizasyonu) içerik hazırlığında uygulanır.
+- **Lexical:** BGE-M3 sparse (öğrenilmiş) + `pg_trgm` (tam/yazım-hatalı ad).
 - **Depolama:** tam `float32` vektör (karar — bu ölçekte hassasiyet > tasarruf).
 - **Filtre:** `server/database/object_kind/category/secondary_categories` ile kapsam daraltma (multi-tenant).
+- **Re-embed damgası:** sorgu yalnızca o kapsamın **aktif** `embedding_model`/`dim` damgalı satırlarını okur (re-embed sırasında eski set; yukarıdaki swap kararı). Bunun için `embeddings(uid, embedding_model)` üzerinde yardımcı indeks.
+
+### Türkçe tokenizasyon ve collation (karar)
+Trigram ad-araması (`08` `name` niyetinde **birincil**) Türkçe'de doğru çalışmalı; bu bir
+parantez-notu değil, açık bir karardır:
+- **Sorun:** noktalı/noktasız I (İ/ı ↔ I/i), `LOWER()`'ın varsayılan collation'a bağlı yanlış
+  katlaması, `unaccent`'in Türkçe karakterleri (ş/ç/ğ/ö/ü) agresif ezmesi → `SP_TEKLİF` ≠ `SP_TEKLIF`
+  yanlış pozitif/negatif.
+- **Karar:** Ad/lexical normalizasyonu **uygulama katmanında deterministik** yapılır (Python,
+  açık Türkçe katlama tablosu) — DB collation'ına bağımlı kalınmaz; trigram'a hep aynı
+  normalize biçim verilir. `unaccent` Türkçe-özel karakterleri **korur** (yalnızca aksan değil
+  Türkçe-bilinçli fold). Hem ham ad hem normalize ad saklanır (`objects.name` + türetilmiş
+  arama alanı) → kullanıcıya gerçek ad, aramaya normalize ad.
+- **Doğrulama:** `15` unit testlerine Türkçe ad korpusu (İ/ı, ş/ç/ğ varyantları) eklenir.
 
 ### Neden pgvector / tek DB?
 - Vektör + keyword + metadata + graph tek yerde → "basit/dengeli" önceliği.

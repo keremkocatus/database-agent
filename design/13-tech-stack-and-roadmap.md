@@ -9,7 +9,7 @@
 | SQL parsing | `sqlglot` (tsql) | AST, bağımlılık, parametre çıkarımı (`04`) |
 | Bağımlılık (server) | `sys.dm_sql_referenced_entities` | En doğru bağımlılık kaynağı (`04`) |
 | LLM erişimi | İnce custom adapter | Provider-agnostik, minimum bağımlılık (`09`) |
-| LLM (lokal) | vLLM / Ollama | GPU/CPU; **Qwen2.5 (Apache, varsayılan)**; Gemma vb. opsiyon (lisans `09`) |
+| LLM (lokal) | vLLM / Ollama | Taban **Qwen2.5-14B-AWQ** (tek 24GB), `hardware_profile: auto` ile yukarı/aşağı ölçeklenir; GPU zorunlu değil (cloud/CPU) (`09`) |
 | LLM (cloud) | Vertex / OpenAI / Anthropic | "Hangisi varsa onunla" (`09`) |
 | Embedding | BGE-M3 (varsayılan, swappable) | Çokdilli + kod, lokal (`07`) |
 | Reranker | bge-reranker-v2-m3 | Cross-encoder isabet (`08`) |
@@ -22,9 +22,10 @@
 | Scheduler/Queue | APScheduler + Postgres job-queue | Scheduler enqueue, worker tüketir (`01`,`11`) |
 | API | FastAPI + uvicorn | REST + streaming (`12`) |
 | CLI | Typer | Sorgu + sync yönetimi (`12`) |
-| Mimari | Clean Architecture (api/application/domain/infrastructure) | Outfit ile tutarlı; AI = application/agent slice |
-| Güvenlik | Exclusion (denylist) + injection guardrail + scope auth | Kritik gizlilik (`14`) |
-| Observability | Prometheus + Grafana + OpenTelemetry + JSON log | Takip edilebilirlik (`16`) |
+| Mimari | Clean Architecture (api/application/domain/infrastructure) | Outfit ile tutarlı; AI = application/agent slice; **koda yeni şey eklemek = yeni adapter/use-case** (port arkası) |
+| Güvenlik | Exclusion + per-user görünürlük + injection guardrail + scope auth | Kritik gizlilik (`14`); redaction YOK → `allow_cloud` |
+| Eşzamanlılık/kapasite | Havuz + kuyruk + perf-test | Çok-kullanıcı, kilitlenmez, ölçülebilir (`20`) |
+| Observability | Prometheus + Grafana + OpenTelemetry + JSON log + token ölçümü | Takip edilebilirlik + kaynak kök-neden (`16`/`20`) |
 | Chat | Oturum + pencere/özet/semantik bellek (Postgres+pgvector) | Chatbot (`17`) |
 | Config | Pydantic Settings + YAML + `.env` | Çok-sunucu + secret + exclusion (`02`,`14`) |
 | Paketleme | `pyproject.toml` (+ ops. Docker) | `db-agent` konsol scripti |
@@ -111,18 +112,32 @@ Bağımlılık sırasına göre, her milestone tek başına test edilebilir:
 
 **M7 — Scheduling + Serving:** Postgres job-queue + `worker` entrypoint, APScheduler enqueue, reconciler, `/admin/*`, `serve`, streaming. → *Çıktı: kendini güncelleyen servis.*
 
-**M8 — Sertleştirme:** resume/lock, hata state'leri, **observability (`16`)**, **güvenlik (`14`: exclusion + redaction + injection + scope auth)**, **test/eval (`15`)**, **yedek/restore + DR (`19`: disk + config + Postgres-otoriter)**, **maliyet tavanı (`19`)**, retention, decommission, webhook, Docker/compose, dokümantasyon. (Opsiyonel: web chat UI, şifreli secrets store, veri profilleme.)
+**M8 — Sertleştirme:** resume/lock, hata state'leri + **fail-listesi (`09`)**, **observability + token ölçümü (`16`)**, **güvenlik (`14`: exclusion + per-user görünürlük + injection + scope auth; redaction YOK → `allow_cloud`/provider seçimi)**, **eşzamanlılık/kapasite + perf-test (`20`)**, **test/eval (`15`)**, **yedek/restore + DR (`19`: disk + config + Postgres-otoriter; ham SQL disk-only riski)**, retention, decommission, webhook, Docker/compose, dokümantasyon. (Opsiyonel: web chat UI, şifreli secrets store, veri profilleme.)
 
 ## Açık kaynak notları
 - LICENSE repoda mevcut. README + bu `design/` seti açık kaynak için yeterli başlangıç dokümantasyonu.
 - `data/`, `.env`, model cache `.gitignore`'da.
 - Hassas örnek config yerine `servers.example.yaml` + `.env.example`.
 
-## Çözülmeyi bekleyen açık sorular (sonraki turlar)
-1. ~~Windows Authentication~~ → SQL auth seçildi (`02`). Sonradan gerekirse `auth` alanı genişler.
-2. Bir sunucuda kaç DB / toplam kaç nesne bekleniyor? (keşif paralelliği, `02`)
-3. Lokal GPU spesifikasyonu (model boyutu/quantization + VRAM bütçesi, `09`/`13`)?
-4. Cloud kullanımına izinli DB'ler vs sadece-lokal DB ayrımı (`09` `allow_cloud`, `14`)?
-5. Altın değerlendirme seti için örnek soru-cevaplar kim sağlayacak? (`08`/`15`)
-6. Serving erişim modeli: API-key + kapsam yeterli mi, yoksa SSO/rol gerekli mi? (`14`)
-7. Redaction politikası: sadece-lokal DB'lerde de maskeleme açık mı kalsın? (`14`)
+## Ölçek notu (karar — v1 sade tutulur)
+Bu sürüm **büyük-ölçek özel çözümü kurmaz** (sharding / ayrı vektör DB / partition). Yaklaşım:
+DB-başına izole keşif + arama (`10`), DB-by-DB bootstrap (`19`), ve **sürekli kaynak takibi**
+(`16`/`20`) ile yük kök-nedeninin erken görülmesi. Korpus çok büyürse bu sinyallere dayanarak
+ileride ölçek çözümü eklenir — şimdiden değil. (Ayrıntı: `REVIEW-gap-analysis` 1.5.)
+
+## Çözülmeyi bekleyen / çözülen açık sorular
+1. ~~Windows Authentication~~ → SQL auth seçildi (`02`).
+2. Bir sunucuda kaç DB / toplam kaç nesne? → **Ölçek-bağımsız tasarım** (yukarıdaki not); kesin
+   sayı kapasite ayarı (`20` `concurrency.yaml`) için `db-agent perf-test` ile ölçülür. Yine de
+   gerçek beklenti girilirse havuz varsayılanları daha iyi ayarlanır.
+3. Lokal GPU spesifikasyonu → **Çözüldü:** GPU zorunlu değil (cloud/CPU de çalışır). **Taban profili tek 24 GB**
+   (Qwen2.5-14B-AWQ + BGE-M3 + reranker); `hardware_profile: auto` doctor'ın algıladığı donanıma göre
+   yukarı ölçeklenir (48GB/2-GPU → daha yüksek hassasiyet + daha çok slot), aşağı düşer (CPU → 7B fallback). `09`.
+4. Cloud-izinli vs sadece-lokal DB ayrımı → `allow_cloud` kapsam-bazlı (`09`/`14`); hassas DB = lokal-zorunlu. Operatör kararı.
+5. Altın set kim sağlayacak? → M5'te **sentetik tohum (LLM ile nesne→soru üret) + ~30 elle-onaylı çekirdek**
+   (sahibi proje sahibi/alan uzmanı), sonra feedback ile büyür (`15`). Sentetik üretim cold-start'ı çözer.
+6. Serving erişim modeli → API-key + scope + **rol-bazlı per-user `deny`** (`14` §3.1) seçildi; SSO/OIDC ileride.
+7. ~~Redaction politikası~~ → **Redaction yok** (karar). Hassas içerik için sorumluluk kullanıcının provider seçiminde (`allow_cloud`, `14`).
+8. Gerçek kapasite (kaç eşzamanlı kullanıcı) → **Sabit sayı yok; kapasiteden ölçeklenir.** `auto` havuzlar
+   (doctor algılar) + `db-agent perf-test` ölçer (doygunluğun ~%70-80'i hedef); donanım büyüyünce kapasite
+   kendiliğinden artar, dolunca `capacity` sinyali (`20`). Net rakam = perf-test çıktısı.

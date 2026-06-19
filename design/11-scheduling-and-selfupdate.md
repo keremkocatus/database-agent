@@ -61,14 +61,25 @@ Maliyet kuralı: **değişmeyen nesne hiçbir LLM/embedding çağrısı görmez*
 
 - **Run kaydı:** `runs(id, server, started, finished, changed, added, removed, errors, drift, pending_dbs, degraded)` — `02`'den degraded/pending de burada.
 - **Idempotent + resume:** Per-object `state` (`extracted→…→indexed`, Postgres) sayesinde crash'te yarım job kaldığı yerden (bkz. `03`/`01`).
-- **Job hata politikası (karar):** Job başarısızsa **N retry + backoff**; hâlâ olmazsa **dead-letter**'a düşer + alarm; sistem diğer job'lara devam eder. (Bağlantı-seviyesi retry `02`'de; bu job-seviyesi.)
-- **Kilit:** Aynı `(server,db)` keşfi için coalescing + DB advisory lock; per-object job'lar `SKIP LOCKED` ile çakışmaz.
-- **Concurrency:** Farklı sunucular/DB'ler paralel; aynı nesne tek worker.
+- **Job hata politikası (karar):** Job başarısızsa **2 retry + backoff**; hâlâ olmazsa **dead-letter**'a düşer + alarm; nesne `state='failed'` (`09` fail-listesi) → **aramaya katılmaz**, indeksten düşürülür; sistem diğer job'lara devam eder. (Bağlantı-seviyesi retry `02`'de; bu job-seviyesi.) Düzelince sonraki sync/`reindex` ile otomatik yeniden denenir.
+- **Kilit:** Aynı `(server,db)` keşfi için coalescing + DB advisory lock; per-object job'lar `SKIP LOCKED` ile çakışmaz. **Tek istisna:** advisory lock yalnızca aynı kapsamın eş-keşfini engeller; sistemin geri kalanını **bloke etmez** (`20` kilitlenmeme değişmezi).
+- **Concurrency:** Farklı sunucular/DB'ler paralel; aynı nesne tek worker. Worker-içi paralel `object_jobs` ve AI/MSSQL semaphore'ları `20`'de yönetilir; havuz dolunca kuyruğa alınır, kilitlenmez.
+
+### Süreçler-arası sürüm uyumu (karar, `REVIEW-gap-analysis` 2.5)
+API ve Worker ayrı deploy edilir (`01`/`12`); ortak Postgres şeması ve job kuyruğu üstünden konuşurlar.
+Sürüm kayması (biri yeni, biri eski) job'ları bozmamalı:
+- **Geriye-uyumlu migration sırası:** **önce şema (migration runner) → sonra worker → sonra api.**
+  Şema her zaman en az iki ardışık kod sürümüyle uyumlu (additive değişiklik; alan silme bir
+  sonraki sürüme ertelenir).
+- **Job payload `version` alanı:** Her job `payload.version` taşır. Worker, **bilmediği (daha yeni)**
+  bir versiyon görürse job'u **dead-letter etmez** → `held` durumuna alır (beklet) ve atlar; worker
+  yükseltilince `held` job'lar yeniden işlenir. Böylece yanlış sıralı deploy veri/iş kaybetmez.
+- **`meta.schema_version`** (disk) ve Postgres şema sürümü `01`/`03`'teki migrator ile birlikte yükselir.
 
 ## Reconciler ve full reindex tetikleyicileri
 
 - **Reconciler:** her sync sonunda + periyodik; disk↔Postgres `(uid,hash)` karşılaştırır, drift'i hizalar ve raporlar (`01`).
-- **Full reindex:** Embedding `model`/`dim` değişti (`07` damga) → ilgili server/db full re-embed; manuel `db-agent reindex`.
+- **Full reindex:** Embedding `model`/`dim` değişti (`07` damga) → ilgili server/db full re-embed; manuel `db-agent reindex`. **Servis kesilmez:** re-embed sırasında sorgu **eski aktif set** üzerinden çalışır; yeni set arka planda yeni damgayla dolar; kapsam tamamlanınca atomik **swap** (`07` "Re-embed sırasında servis" kararı). Yarı-bitmiş set hiçbir zaman sorguya girmez.
 - **Model-bump re-enrich:** Enricher/categorizer **chat modeli** değişirse, mevcut özet/kategoriler eski modelle üretilmiş kalır. Önbellek (`09`) yeni model_id'de otomatik geçersizdir ama proaktif değildir. Karar: `db-agent reindex --scope enrich` ile (veya config'te `reenrich_on_model_change: true`) etkilenen kapsam **yeniden enrich** edilir; varsayılan kapalı (maliyet), bilinçli tetiklenir.
 - **Taksonomi tazeleme (karar):** Her sync'te değil — **periyodik + eşik tetikli** (`diger` oranı / yeni nesne sayısı eşiği aşılınca) `taxonomy` job'u kuyruğa (06).
 
