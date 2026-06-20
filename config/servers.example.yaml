@@ -1,0 +1,72 @@
+# config/servers.yaml örneği (design/02). Kopyala → config/servers.yaml (gitignore'da).
+# Şifreler burada DEĞİL, .env'de (username_env/password_env ile referans).
+
+defaults:
+  driver: "ODBC Driver 18 for SQL Server"
+  auth: "sql"
+  encrypt: true
+  trust_server_certificate: true       # kurum içi self-signed sertifika senaryosu
+  application_intent: "ReadOnly"
+  app_name: "db-agent-catalog"
+  schedule: "0 3 * * *"
+  embedding_model: "bge-m3"
+  resilience:
+    max_retries: 3
+    backoff_seconds: 5
+  new_database_policy: "discover_then_approve"
+
+servers:
+  # docker-compose'daki seed/demo MSSQL (M1/M2 testi için)
+  - id: "demo"
+    host: "localhost,14333"
+    username_env: "DEMO_USER"
+    password_env: "DEMO_PASS"
+    databases: ["DemoDB"]              # explicit → onay kapısı gerekmez
+    include_schemas: "all"
+    object_types: ["procedure", "view", "function", "trigger", "table"]
+    exclude_object_patterns: ["tmp_*", "bkp_*", "*_old"]
+    include_object_patterns: "all"
+
+# --- M3/M4: provider katmanı + taksonomi (design/09, /06) -------------------
+allow_cloud: false              # cloud provider sigortası; true ise OpenAI/Anthropic/Vertex açılır
+hardware_profile: "auto"        # auto | gpu24 | gpu48 | multi_gpu | cpu | cloud
+
+llm:
+  chat:
+    provider: "ollama"          # vllm | ollama | openai | anthropic | vertex
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:3b"
+    api_key_env: null           # cloud için .env değişken adı (ör. OPENAI_API_KEY)
+    temperature: 0.0
+    max_context: 8192
+  roles:                        # rol-bazlı override (opsiyonel, design/09)
+    enricher:    { model: "qwen2.5:7b" }
+    categorizer: { model: "qwen2.5:3b" }
+  cache:
+    offline_tasks: true         # (prompt-hash + model) önbelleği
+  structured_output: "schema"
+
+embedding:
+  provider: "local"             # local (bge-m3, .[local]) | openai
+  model: "bge-m3"
+  dim: 1024
+  api_key_env: null
+
+reranker:
+  provider: "local"             # M5'te kullanılır
+  model: "bge-reranker-v2-m3"
+
+# Tohum kategoriler (design/06) — boş bırakılabilir, LLM etiketleme rafine eder
+taxonomy:
+  code_seed: ["teklif", "police", "musteri", "raporlama"]
+  data_seed: ["teklif-verisi", "musteri-verisi", "police-verisi"]
+
+# Dışlama (design/14): eşleşen nesne çekilmez/indekslenmez/aranmaz, varlığı ifşa edilmez.
+exclusions: []
+# Örnek:
+# exclusions:
+#   - server: "demo"
+#     database: "DemoDB"
+#     types: ["table"]
+#     patterns: ["*_PII", "*_SECRET"]
+#     reason: "PII / kritik gizlilik"
