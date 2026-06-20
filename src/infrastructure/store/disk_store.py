@@ -13,6 +13,7 @@ from pathlib import Path
 
 from src.domain.entities.catalog import CatalogObject, TableDef
 from src.domain.entities.manifest import ChangeEvent, Manifest
+from src.domain.entities.taxonomy import Taxonomy
 from src.domain.value_objects.identity import sanitize_filename
 
 _TYPE_FOLDER = {
@@ -88,6 +89,28 @@ class DiskObjectStore:
     def remove_object(self, obj: CatalogObject) -> None:
         for path in (self._sql_path(obj), self._meta_path(obj)):
             path.unlink(missing_ok=True)
+
+    # --- taksonomi + katalog (M4, design/06) -----------------------------
+    def _catalog_dir(self, server: str, database: str, kind: str) -> Path:
+        return self._db_dir(server, database) / "catalog" / kind
+
+    def write_taxonomy(self, server: str, database: str, taxonomy: Taxonomy) -> None:
+        path = self._catalog_dir(server, database, taxonomy.kind) / "_taxonomy.json"
+        _atomic_write(path, json.dumps(taxonomy.to_dict(), ensure_ascii=False, indent=2))
+
+    def load_taxonomy(self, server: str, database: str, kind: str) -> Taxonomy | None:
+        path = self._catalog_dir(server, database, kind) / "_taxonomy.json"
+        if not path.exists():
+            return None
+        return Taxonomy.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def write_catalog(
+        self, server: str, database: str, kind: str, category_key: str,
+        catalog_json: dict, readme: str,
+    ) -> None:
+        cat_dir = self._catalog_dir(server, database, kind) / sanitize_filename(category_key)
+        _atomic_write(cat_dir / "catalog.json", json.dumps(catalog_json, ensure_ascii=False, indent=2))
+        _atomic_write(cat_dir / "README.md", readme)
 
 
 def _atomic_write(path: Path, content: str) -> None:

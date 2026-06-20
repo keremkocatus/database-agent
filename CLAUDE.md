@@ -10,8 +10,25 @@ lokale indiren; yapısal metadata + bağımlılık grafiği üreten; (ileride) a
 klasörleyip arayan, kendini güncelleyen, lokal, açık kaynak bir katalog sistemi.
 
 ## Şu anki durum
-**M0–M2 (LLM'siz deterministik çekirdek) tamamlandı.** M3+ (provider/embedding/retrieval/agent/
-scheduling/serving/sertleştirme) henüz yok ama port arayüzleri hazır. Roadmap: `design/13`.
+**M0–M4 tamamlandı.** M0–M2 = LLM'siz deterministik çekirdek (keşif/extract/parse/tablo sözlüğü →
+disk + Postgres). M3 = provider katmanı (`design/09`): `LLMProvider`/`EmbeddingProvider`/`RerankerProvider`
+port'ları + tüm chat adapter'ları (vLLM/Ollama/OpenAI/Anthropic/Vertex) + iki embedding adapter
+(BGE-M3 lokal + cloud) + structured output + `allow_cloud` guard + offline önbellek. M4 = enrich
+(özet/açıklama, kalite kapısı) + taksonomi (seed+LLM) + categorize + card embed → Postgres `embeddings`
++ disk `catalog/`. **M5+ (retrieval/agent/scheduling/serving/sertleştirme) henüz yok**; port'lar hazır.
+Roadmap: `design/13`.
+
+### Provider katmanı kuralları (M3/M4)
+- Tüm sistem yalnızca `LLMProvider`/`EmbeddingProvider` port'larını görür; sağlayıcıya özel format
+  adapter'da tek `LLMResponse`/`EmbedResult`'a normalize edilir. Normalize fonksiyonları **saf** (HTTP'siz
+  test edilir) — yeni provider eklerken bu deseni koru.
+- **`allow_cloud` guard** `factory.py`'de merkezi; cloud adapter `allow_cloud=false` iken kurulmaz.
+- **Yapısal-only fallback (`design/07`):** LLM/özet yoksa kart "Özet" satırsız yine embed edilir;
+  embedding provider hiç yoksa embed atlanır (M2 davranışı). Bu degrade yolunu bozma.
+- **Kalite kapısı (`design/05`):** LLM özeti embed'den önce `quality_gate` ile doğrulanır (anılan ad
+  yapısal metadata'da var mı). Uydurma özet embeddinge **girmez**.
+- BGE-M3 (`FlagEmbedding`+`torch`) ve Vertex (`google-auth`) **opsiyonel extra** (`[local]`/`[vertex]`),
+  lazy import — kurulu değilse cloud/diğer yola düş, import'ta patlama.
 
 ---
 

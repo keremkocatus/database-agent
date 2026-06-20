@@ -29,6 +29,15 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+# BGE-M3 lokal embedding (dense+sparse) — design/07 varsayılan. Ağır (torch).
+local = [
+    "FlagEmbedding>=1.2",
+    "torch>=2.2",
+]
+# Vertex AI (Gemini chat + embedding) auth — design/09.
+vertex = [
+    "google-auth>=2.30",
+]
 
 [project.scripts]
 db-agent = "src.cli.main:app"

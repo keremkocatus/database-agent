@@ -67,12 +67,16 @@ class DescribeTable:
 
 
 class Status:
-    def __init__(self, catalog: CatalogRepoPort, runs: RunsRepoPort) -> None:
+    def __init__(self, catalog: CatalogRepoPort, runs: RunsRepoPort, embeddings=None) -> None:
         self._catalog = catalog
         self._runs = runs
+        self._embeddings = embeddings
 
     async def execute(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "counts": await self._catalog.counts(),
             "recent_runs": await self._runs.recent(limit=10),
         }
+        if self._embeddings is not None:
+            result["embeddings"] = await self._embeddings.stats()
+        return result

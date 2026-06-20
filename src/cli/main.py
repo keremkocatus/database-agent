@@ -116,8 +116,8 @@ def doctor() -> None:
                     ok = False
                     typer.secho(f"  [kırmızı] kaynak '{srv.id}': {exc}", fg=typer.colors.RED)
 
-            # provider/GPU probları M3'te dolar
-            typer.secho("  [stub] provider/GPU probu — M3'te etkinleşir", fg=typer.colors.BLUE)
+            # provider + donanım probu (M3, design/09/19)
+            _probe_providers(c, cfg)
             return ok
         finally:
             await c.aclose()
@@ -159,8 +159,9 @@ def sync(
     server: str = typer.Option(..., "--server", "-s"),
     database: str | None = typer.Option(None, "--database", "-d"),
     inline: bool = typer.Option(True, "--inline/--queue", help="M0-M2: yalnızca inline destekli"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="LLM/embedding adımlarını atla (yapısal-only)"),
 ) -> None:
-    """Keşif→extract→parse→tablo sözlüğü→Postgres (inline pipeline, design/01)."""
+    """Keşif→extract→parse→tablo sözlüğü→(enrich→categorize→embed)→Postgres (inline, design/01)."""
 
     if not inline:
         typer.secho("--queue M7'de (job-queue+worker). Şimdilik --inline kullan.", fg=typer.colors.YELLOW)
@@ -177,7 +178,9 @@ def sync(
             else:
                 dbs = c.source_for(server).discover_databases(server)
 
-            uc = c.sync_use_case(server)
+            uc = c.sync_use_case(server, enable_llm=not no_llm)
+            mode = "yapısal-only" if no_llm else "tam (LLM+embed varsa)"
+            typer.echo(f"mod: {mode}")
             for db in dbs:
                 typer.echo(f"sync {server}/{db} ...")
                 summary = await uc.execute(server, db)
@@ -185,6 +188,42 @@ def sync(
                     f"  [{summary.status}] {json.dumps(summary.counts, ensure_ascii=False)}",
                     fg=typer.colors.GREEN if summary.status == "ok" else typer.colors.RED,
                 )
+        finally:
+            await c.aclose()
+
+    _run(_do())
+
+
+@app.command()
+def reindex(
+    server: str = typer.Option(..., "--server", "-s"),
+    database: str | None = typer.Option(None, "--database", "-d"),
+) -> None:
+    """Re-embed: enrich→categorize→embed yeniden (design/11/19). Şu an tam sync üzerinden."""
+    sync(server=server, database=database, inline=True, no_llm=False)
+
+
+@app.command()
+def catalog(
+    server: str = typer.Option(..., "--server", "-s"),
+    database: str = typer.Option(..., "--database", "-d"),
+) -> None:
+    """Kod + veri taksonomisi + kategori başına nesne sayıları (design/06/12)."""
+
+    async def _do() -> None:
+        c = _container()
+        try:
+            counts = await c.catalog.category_counts(server, database)
+            for kind in ("code", "data"):
+                tax = c.store.load_taxonomy(server, database, kind)
+                typer.secho(f"\n[{kind}] taksonomi", fg=typer.colors.CYAN)
+                if tax is None:
+                    typer.echo("  (henüz üretilmedi — db-agent sync çalıştır)")
+                    continue
+                typer.echo(f"  versiyon: {tax.version}")
+                for cat in tax.categories:
+                    n = counts.get(cat.key, 0)
+                    typer.echo(f"  - {cat.key} ({cat.label}): {n} nesne")
         finally:
             await c.aclose()
 
@@ -277,6 +316,38 @@ def serve(host: str = typer.Option("127.0.0.1"), port: int = typer.Option(8000))
     import uvicorn
 
     uvicorn.run("src.api.main:app", host=host, port=port)
+
+
+def _probe_providers(c: Container, cfg) -> None:
+    """doctor: chat + embed capability probu + donanım profili (design/09/19)."""
+    from src.application.dtos.llm import Msg
+    from src.infrastructure.llm.hardware import detect_profile
+
+    profile, detail = detect_profile()
+    note = profile if cfg.hardware_profile == "auto" else f"{cfg.hardware_profile} (config)"
+    typer.secho(f"  [bilgi] donanım profili: {note} — {detail}", fg=typer.colors.BLUE)
+
+    # chat
+    try:
+        chat = c.llm_provider(role="enricher")
+        resp = chat.chat([Msg("user", "ping")], max_tokens=5)
+        ok = bool((resp.text or "").strip() or resp.parsed)
+        tag, color = ("yeşil", typer.colors.GREEN) if ok else ("sarı", typer.colors.YELLOW)
+        typer.secho(f"  [{tag}] chat '{chat.model_id}' yanıt verdi", fg=color)
+    except Exception as exc:
+        typer.secho(f"  [sarı] chat probu: {str(exc)[:90]}", fg=typer.colors.YELLOW)
+
+    # embed
+    try:
+        emb = c.embedding_provider()
+        vecs = emb.embed(["ping"], kind="passage")
+        d = len(vecs[0].dense) if vecs else 0
+        sparse = "dense+sparse" if emb.supports_sparse else "dense-only"
+        good = d == emb.dim
+        tag, color = ("yeşil", typer.colors.GREEN) if good else ("sarı", typer.colors.YELLOW)
+        typer.secho(f"  [{tag}] embed '{emb.model_id}' dim={d} ({sparse})", fg=color)
+    except Exception as exc:
+        typer.secho(f"  [sarı] embed probu: {str(exc)[:90]}", fg=typer.colors.YELLOW)
 
 
 def _jsonable(value):

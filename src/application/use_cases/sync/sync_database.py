@@ -50,6 +50,7 @@ class SyncDatabase:
         graph: GraphRepoPort,
         runs: RunsRepoPort,
         config: ServersConfig,
+        enrichment=None,  # EnrichmentPipeline | None (M4); None → yapısal-only (M2)
     ) -> None:
         self._source = source
         self._store = store
@@ -58,6 +59,7 @@ class SyncDatabase:
         self._graph = graph
         self._runs = runs
         self._config = config
+        self._enrichment = enrichment
 
     async def execute(self, server_id: str, database: str) -> SyncSummary:
         summary = SyncSummary(server=server_id, database=database)
@@ -128,6 +130,19 @@ class SyncDatabase:
             # --- PASS B: kenarlar (hedefler artık mevcut → FK güvenli) ---
             for obj in code_objects:
                 await self._catalog.replace_edges(obj.uid, edges_by_src.get(obj.uid, []))
+
+            # --- M4: anlamsal katman (enrich→taxonomy→categorize→embed→catalog) ---
+            if self._enrichment is not None:
+                raw_by_uid = {
+                    o.uid: (definitions.get(o.object_id).definition if definitions.get(o.object_id) else None)
+                    for o in code_objects
+                }
+                await self._enrichment.run(
+                    server=server_id, database=database,
+                    code_objects=code_objects, tables=tables, raw_sql_by_uid=raw_by_uid,
+                )
+                counts["enriched"] = sum(1 for o in code_objects if o.summary_confidence == "ok")
+                counts["indexed"] = sum(1 for o in code_objects if o.state == "indexed")
 
             # --- Silmeler (soft-delete güvenliği geçti) ---
             for removed in diff.removed:

@@ -57,7 +57,14 @@ class CatalogObject:
 
     human_description: str | None = None
     summary: str | None = None  # M4 (LLM) doldurur
+    summary_confidence: str | None = None  # ok | low (design/05 kalite kapısı)
     category: str | None = None  # M4 (LLM) doldurur
+    subcategory: str | None = None
+    secondary_categories: list[str] = field(default_factory=list)
+    search_name: str | None = None  # Türkçe-fold normalize ad (design/07)
+    pinned: bool = False
+    pinned_category: str | None = None
+    fail_reason: str | None = None  # state='failed' ise (design/09)
 
     def meta_dict(self) -> dict[str, Any]:
         """Disk *.meta.json gövdesi (design/04 şeması)."""
@@ -83,7 +90,12 @@ class CatalogObject:
             "loc": self.loc,
             "human_description": self.human_description,
             "summary": self.summary,
+            "summary_confidence": self.summary_confidence,
             "category": self.category,
+            "subcategory": self.subcategory,
+            "secondary_categories": self.secondary_categories,
+            "pinned": self.pinned,
+            "pinned_category": self.pinned_category,
             "state": self.state,
         }
 
