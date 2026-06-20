@@ -1,0 +1,20 @@
+{
+  // Paket işaretleyici __init__.py'leri ve derleme/araç gürültüsünü Explorer'da gizle.
+  "files.exclude": {
+    "**/__init__.py": true,
+    "**/__pycache__": true,
+    "**/*.egg-info": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.mypy_cache": true
+  },
+  // Aramada da gizle (Ctrl+P / global arama __init__ ile dolmasın).
+  "search.exclude": {
+    "**/__init__.py": true,
+    "**/.venv": true,
+    "**/data": true
+  },
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+  "python.analysis.extraPaths": ["."]
+}
