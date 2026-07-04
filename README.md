@@ -1,4 +1,4 @@
-# db-agent — MSSQL Agentic Katalog (deterministik çekirdek: M0–M2)
+# db-agent — MSSQL Agentic Katalog (Incomplete)
 
 MSSQL sunucularını keşfeden, programlanabilir nesneleri (SP/View/Function/Trigger) ve tablo
 şemalarını lokale indiren, yapısal metadata + bağımlılık grafiği üreten açık kaynak sistem.
